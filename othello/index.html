@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>オセロ</title>
+<style>
+  :root {
+    --bg: #f4f1ea;
+    --fg: #222;
+    --board: #2e7d32;
+    --line: #1b5e20;
+    --hint: rgba(0, 0, 0, 0.25);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1d1d1d; --fg: #eee; --hint: rgba(255, 255, 255, 0.3); }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+  h1 { margin: 0; font-size: 1.5rem; }
+  #status { font-size: 1.1rem; min-height: 1.5em; text-align: center; }
+  #board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    width: min(92vw, 480px);
+    aspect-ratio: 1;
+    background: var(--line);
+    gap: 2px;
+    padding: 2px;
+    border-radius: 6px;
+  }
+  .cell {
+    background: var(--board);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: default;
+  }
+  .cell.valid { cursor: pointer; }
+  .cell.valid::after {
+    content: "";
+    width: 25%;
+    height: 25%;
+    border-radius: 50%;
+    background: var(--hint);
+  }
+  .disc {
+    width: 82%;
+    height: 82%;
+    border-radius: 50%;
+    box-shadow: 0 2px 3px rgba(0, 0, 0, 0.5);
+  }
+  .disc.black { background: radial-gradient(circle at 35% 35%, #555, #000); }
+  .disc.white { background: radial-gradient(circle at 35% 35%, #fff, #ccc); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  button, select {
+    font-size: 1rem;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid #888;
+    background: transparent;
+    color: var(--fg);
+  }
+  select option { color: #000; }
+  button { cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>オセロ</h1>
+  <div id="status"></div>
+  <div id="board"></div>
+  <div class="controls">
+    <select id="mode">
+      <option value="cpu">対CPU（あなたが黒）</option>
+      <option value="pvp">2人対戦</option>
+    </select>
+    <button id="reset">最初から</button>
+  </div>
+
+<script>
+const SIZE = 8, EMPTY = 0, BLACK = 1, WHITE = 2;
+const DIRS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+const NAME = { [BLACK]: "黒", [WHITE]: "白" };
+
+const boardEl = document.getElementById("board");
+const statusEl = document.getElementById("status");
+const modeEl = document.getElementById("mode");
+
+let board, turn, gameOver;
+
+function init() {
+  board = Array.from({ length: SIZE }, () => Array(SIZE).fill(EMPTY));
+  board[3][3] = board[4][4] = WHITE;
+  board[3][4] = board[4][3] = BLACK;
+  turn = BLACK;
+  gameOver = false;
+  render();
+}
+
+const opponent = p => (p === BLACK ? WHITE : BLACK);
+const inside = (r, c) => r >= 0 && r < SIZE && c >= 0 && c < SIZE;
+
+// (r, c) に player が置いたときに裏返る石の座標を返す
+function flips(r, c, player) {
+  if (board[r][c] !== EMPTY) return [];
+  const result = [];
+  for (const [dr, dc] of DIRS) {
+    const line = [];
+    let y = r + dr, x = c + dc;
+    while (inside(y, x) && board[y][x] === opponent(player)) {
+      line.push([y, x]);
+      y += dr; x += dc;
+    }
+    if (line.length && inside(y, x) && board[y][x] === player) result.push(...line);
+  }
+  return result;
+}
+
+function validMoves(player) {
+  const moves = [];
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++) {
+      const f = flips(r, c, player);
+      if (f.length) moves.push({ r, c, f });
+    }
+  return moves;
+}
+
+function count(player) {
+  return board.flat().filter(v => v === player).length;
+}
+
+function play(r, c) {
+  const f = flips(r, c, turn);
+  if (!f.length) return false;
+  board[r][c] = turn;
+  for (const [y, x] of f) board[y][x] = turn;
+  nextTurn();
+  return true;
+}
+
+function nextTurn() {
+  const next = opponent(turn);
+  if (validMoves(next).length) {
+    turn = next;
+  } else if (!validMoves(turn).length) {
+    gameOver = true;
+  } else {
+    // 相手はパス
+    render(`${NAME[next]}は置ける場所がないのでパスです`);
+    maybeCpu();
+    return;
+  }
+  render();
+  maybeCpu();
+}
+
+const isCpuTurn = () => modeEl.value === "cpu" && turn === WHITE && !gameOver;
+
+// CPU: 角を最優先、次に X/C 打ちを避け、裏返す枚数が多い手
+function cpuMove() {
+  const moves = validMoves(WHITE);
+  const corner = (r, c) => (r === 0 || r === 7) && (c === 0 || c === 7);
+  const nearCorner = (r, c) => !corner(r, c) && (r <= 1 || r >= 6) && (c <= 1 || c >= 6);
+  const score = m => m.f.length + (corner(m.r, m.c) ? 100 : 0) - (nearCorner(m.r, m.c) ? 20 : 0) + Math.random();
+  moves.sort((a, b) => score(b) - score(a));
+  play(moves[0].r, moves[0].c);
+}
+
+function maybeCpu() {
+  if (isCpuTurn()) setTimeout(cpuMove, 500);
+}
+
+function render(message) {
+  boardEl.innerHTML = "";
+  const moves = gameOver || isCpuTurn() ? [] : validMoves(turn);
+  const valid = new Set(moves.map(m => m.r * SIZE + m.c));
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      if (board[r][c]) {
+        const disc = document.createElement("div");
+        disc.className = "disc " + (board[r][c] === BLACK ? "black" : "white");
+        cell.appendChild(disc);
+      } else if (valid.has(r * SIZE + c)) {
+        cell.classList.add("valid");
+        cell.addEventListener("click", () => play(r, c));
+      }
+      boardEl.appendChild(cell);
+    }
+
+  const b = count(BLACK), w = count(WHITE);
+  let text = `黒 ${b} - ${w} 白　`;
+  if (gameOver) {
+    text += b === w ? "引き分け！" : `${b > w ? "黒" : "白"}の勝ち！`;
+  } else {
+    text += `${NAME[turn]}の番`;
+    if (message) text += `（${message}）`;
+  }
+  statusEl.textContent = text;
+}
+
+document.getElementById("reset").addEventListener("click", init);
+modeEl.addEventListener("change", init);
+init();
+</script>
+</body>
+</html>
